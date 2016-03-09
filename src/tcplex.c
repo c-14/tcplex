@@ -23,11 +23,14 @@ struct tplexee {
 	struct bufferevent *server;
 	struct tplexee *next;
 	struct tplexee *head;
+	struct plexes *br;
 };
 
 struct plexes {
 	struct tplexee *plex;
 	struct plexes *next;
+	struct plexes *prev;
+	struct plex_data *br;
 };
 
 struct plex_data {
@@ -163,13 +166,20 @@ void c_eventcb(struct bufferevent *bev, short events, void *ctx)
 {
 	struct tplexee *plex = ctx;
 
+	(void)bev;
 	if (events & BEV_EVENT_ERROR) {
 		fputs("Got an error from client\n", stderr);
 		/* fprintf(stderr, "Got an error from client %s\n", evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR())); */
 	}
-	bufferevent_free(bev);
-	plex->client = NULL;
-	plex->head->client = NULL;
+	printf("%p, %p, %d\n", (void*)plex->br->prev, (void*)plex->br->next, plex->br->br->connections == plex->br);
+	if (plex->br->prev)
+		plex->br->prev->next = plex->br->next;
+	if (plex->br->next)
+		plex->br->next->prev = plex->br->prev;
+	if (plex->br->br->connections == plex->br)
+		plex->br->br->connections = plex->br->next;
+	free(plex->br);
+	free_tplexee(plex->head);
 }
 
 void s_eventcb(struct bufferevent *bev, short events, void *ctx)
@@ -314,8 +324,13 @@ void setup_plexees(struct bufferevent *bev, struct plex_data *data)
 	plex->server = NULL;
 	plex->next = NULL;
 	plex->head = plex;
+	plex->br = conn;
 	conn->plex = plex;
 	conn->next = data->connections;
+	if (conn->next)
+		conn->next->prev = conn;
+	conn->prev = NULL;
+	conn->br = data;
 	data->connections = conn;
 
 	if (create_plexee(data, plex, 6604) != 0) {
