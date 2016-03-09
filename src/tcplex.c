@@ -171,7 +171,6 @@ void c_eventcb(struct bufferevent *bev, short events, void *ctx)
 		fputs("Got an error from client\n", stderr);
 		/* fprintf(stderr, "Got an error from client %s\n", evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR())); */
 	}
-	printf("%p, %p, %d\n", (void*)plex->br->prev, (void*)plex->br->next, plex->br->br->connections == plex->br);
 	if (plex->br->prev)
 		plex->br->prev->next = plex->br->next;
 	if (plex->br->next)
