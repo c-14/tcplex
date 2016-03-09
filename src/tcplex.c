@@ -22,6 +22,7 @@ struct tplexee {
 	struct bufferevent *client;
 	struct bufferevent *server;
 	struct tplexee *next;
+	struct tplexee *head;
 };
 
 struct plexes {
@@ -72,6 +73,14 @@ void safe_event_free(struct event *ev)
 		event_free(ev);
 }
 
+void safe_bufferevent_free(struct bufferevent **bev)
+{
+	if (*bev) {
+		bufferevent_free(*bev);
+		*bev = NULL;
+	}
+}
+
 void free_tplexee(struct tplexee *plex)
 {
 	struct tplexee *next;
@@ -79,10 +88,11 @@ void free_tplexee(struct tplexee *plex)
 	if (plex == NULL)
 		return;
 
-	bufferevent_free(plex->client);
+	safe_bufferevent_free(&plex->head->client);
 	while (plex != NULL) {
 		next = plex->next;
-		bufferevent_free(plex->server);
+		safe_bufferevent_free(&plex->server);
+		plex->server = NULL;
 		free(plex);
 		plex = next;
 	}
@@ -151,12 +161,15 @@ void tplex(struct tplexee *plex)
 
 void c_eventcb(struct bufferevent *bev, short events, void *ctx)
 {
-	(void)ctx;
+	struct tplexee *plex = ctx;
+
 	if (events & BEV_EVENT_ERROR) {
 		fputs("Got an error from client\n", stderr);
 		/* fprintf(stderr, "Got an error from client %s\n", evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR())); */
 	}
 	bufferevent_free(bev);
+	plex->client = NULL;
+	plex->head->client = NULL;
 }
 
 void s_eventcb(struct bufferevent *bev, short events, void *ctx)
@@ -182,8 +195,8 @@ void s_eventcb(struct bufferevent *bev, short events, void *ctx)
 			prev->next = find->next;
 			free(plex);
 		} else {
-			free(plex);
 			fputs("Can't replace server, no substitutes left.\n", stderr);
+			plex->server = NULL;
 		}
 	}
 	bufferevent_free(bev);
@@ -202,10 +215,12 @@ void connectcb(struct bufferevent *bev, short events, void *ctx)
 		next->client = plex->client;
 		next->server = bev;
 		next->next = plex->next;
+		next->head = plex;
 		plex->next = next;
 	} else if (events & BEV_EVENT_CONNECTED) {
 		plex->server = bev;
 		bufferevent_enable(plex->server, EV_READ);
+		bufferevent_enable(plex->client, EV_READ);
 		bufferevent_setcb(plex->server, s_readcb, NULL, s_eventcb, plex);
 		bufferevent_setcb(plex->client, c_readcb, NULL, c_eventcb, plex);
 		tplex(plex);
@@ -285,9 +300,8 @@ int create_plexee(struct plex_data *data, struct tplexee *plex, int port)
 	return 0;
 }
 
-void readcb(struct bufferevent *bev, void *ctx)
+void setup_plexees(struct bufferevent *bev, struct plex_data *data)
 {
-	struct plex_data *data = ctx;
 	struct plexes *conn;
 	struct tplexee *plex;
 
@@ -299,6 +313,7 @@ void readcb(struct bufferevent *bev, void *ctx)
 	plex->client = bev;
 	plex->server = NULL;
 	plex->next = NULL;
+	plex->head = plex;
 	conn->plex = plex;
 	conn->next = data->connections;
 	data->connections = conn;
@@ -349,8 +364,8 @@ void do_accept(evutil_socket_t serv, short event, void *arg)
 			perror("socket_new");
 			return;
 		}
-		bufferevent_setcb(bev, readcb, NULL, eventcb, data);
-		bufferevent_enable(bev, EV_READ);
+		bufferevent_setcb(bev, NULL, NULL, eventcb, data);
+		setup_plexees(bev, data);
 	}
 }
 
