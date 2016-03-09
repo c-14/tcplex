@@ -14,6 +14,10 @@
 #include <event2/bufferevent.h>
 #include <event2/util.h>
 
+#ifndef evbuffer_add_buffer_reference
+#define evbuffer_add_buffer_reference(x, y) evbuffer_add_buffer(x, y)
+#endif
+
 struct tplexee {
 	struct bufferevent *client;
 	struct bufferevent *server;
