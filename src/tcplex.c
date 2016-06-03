@@ -147,7 +147,12 @@ void c_readcb(struct bufferevent *bev, void *ctx)
 {
 	struct tplexee *plex = ctx;
 	struct evbuffer *input = bufferevent_get_input(bev);
-	struct evbuffer *output = bufferevent_get_output(plex->server);
+	struct evbuffer *output;
+
+	if (!plex->server)
+		return;
+
+	output = bufferevent_get_output(plex->server);
 
 	evbuffer_add_buffer_reference(output, input);
 	evbuffer_drain(input, -1);
