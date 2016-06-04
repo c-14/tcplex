@@ -1,0 +1,47 @@
+Basic Installation
+==================
+
+Dependencies
+------------
+
+A C99 compliant compiler.
+libevent 2.0.22 or later - http://libevent.org/
+
+pkg-config
+----------
+
+imap uses pkg-config to locate libevent and openssl. If you do not have
+pkg-config, or if your version of the library does not ship the ".pc" file,
+you have to provide the library's build options as arguments to make.
+Example: 
+	
+	make LIBEVENT_CFLAGS="-I/usr/local/include" LIBEVENT_LDFLAGS="-L/usr/local/lib -levent"
+
+Compilers and Options
+---------------------
+
+Some systems require unusual options for compilation or linking.
+You can provide these options by passing EXTRA_CFLAGS and EXTRA_LDFLAGS as
+arguments to make.
+Example:
+
+	make CC=gcc EXTRA_CFLAGS="-std=c99"
+
+Compilation
+-----------
+
+1) Enter the src directory
+
+$ cd src
+
+2) Run `make` specifying required options for your system
+
+$ make
+
+
+Running
+-------
+
+1) run tcplex
+
+$ ./tcplex <host0:port0> <host1:port1>

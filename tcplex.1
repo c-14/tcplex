@@ -1,0 +1,39 @@
+.TH tcplex "1" "04 June 2016"
+.SH NAME
+tcplex \- tcp anyplexer
+.SH SYNOPSIS
+\fBtcplex\fR [\fB-d\fR] [\fB-h\fR] [\fB-v\fR] [\fB-l\fR <\fIhost\fR:\fIport\fR> ] <\fIhost\fR:\fIport\fR ...>
+.SH DESCRIPTION
+\fBtcplex\fR is a relatively simple command line tcp anyplexer.
+.PP
+\fBtcplex\fR listens on a user configurable ip/port and then forwards all
+connections to any one of the supplied destinations.
+If the connection to the destination dies while a client is still writing, a
+new connection is established to one of the other destinations provided.
+.SH OPTIONS
+.TP
+.BR \-d ", " \-\-daemon
+Daemonize tcplex.
+.TP
+.BR \-h ", " \-\-help
+Shows the built-in help.
+.TP
+.BR \-v ", " \-\-version
+Displays the current tcplex version.
+.TP
+.BR \-l ", " \-\-listen " " \fI<host:port>\fR
+The IP-address and port on which tcplex should listen.
+Defaults to localhost:7463
+.SH EXAMPLES
+Start tcplex listening on localhost:6600 with destinations set to localhost:6601 and localhost:6602
+.PP
+.nf
+.RS
+tcplex -l localhost:6600 localhost:6601 localhost:6602
+.RE
+.fi
+.PP
+.SH AUTHOR
+Written by Simon Thelen.
+.SH BUGS
+Probably. Please report any bugs or issues with \fBtcplex\fR.

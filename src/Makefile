@@ -8,7 +8,7 @@ LDFLAGS = $(LIBEVENT_LDFLAGS) $(EXTRA_LDFLAGS)
 DEPS    = 
 OBJS    = tcplex.o
 
-.PHONY: all clean
+.PHONY: all clean install
 
 all: tcplex
 
@@ -19,4 +19,4 @@ tcplex: $(OBJS)
 	$(CC) -o $@ $(OBJS) $(CFLAGS) $(LDFLAGS)
 
 clean:
-	rm -f main *.o
+	rm -f tcplex *.o
