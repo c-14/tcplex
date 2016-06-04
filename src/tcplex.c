@@ -254,27 +254,15 @@ void connectcb(struct bufferevent *bev, short events, void *ctx)
 	}
 }
 
-int create_plexer(evutil_socket_t *serv)
+static int create_plexer(int family, int socktype, int protocol, struct sockaddr *addr, socklen_t addrlen, evutil_socket_t *serv)
 {
-	struct addrinfo *servinfo, hints;
 	evutil_socket_t sock;
-	int yes = 1, ret;
+	int yes = 1;
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE;
-
-	if ((ret = getaddrinfo(NULL, "6601", &hints, &servinfo)) != 0) {
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(ret));
-		return -1;
-	}
-
-	sock = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
+	sock = socket(family, socktype, protocol);
 	if (evutil_make_socket_nonblocking(sock) == -1) {
 		if (evutil_closesocket(sock) == -1)
 			perror("close");
-		freeaddrinfo(servinfo);
 		return -1;
 	}
 
@@ -282,19 +270,16 @@ int create_plexer(evutil_socket_t *serv)
 		perror("setsockopt");
 		if (evutil_closesocket(sock) == -1)
 			perror("close");
-		freeaddrinfo(servinfo);
 		return -1;
 	} 
 
-	if (bind(sock, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
+	if (bind(sock, addr, addrlen) == -1) {
 		perror("bind");
 		printf("%d\n", errno);
 		if (evutil_closesocket(sock) == -1)
 			perror("close");
-		freeaddrinfo(servinfo);
 		return -1;
 	}
-	freeaddrinfo(servinfo);
 
 	if (listen(sock, 3) == -1) {
 		perror("listen");
@@ -304,6 +289,87 @@ int create_plexer(evutil_socket_t *serv)
 	}
 
 	*serv = sock;
+	return 0;
+}
+
+void create_plexer_cb(int err, struct evutil_addrinfo *addr, void *ptr)
+{
+	if (err != 0) {
+		fprintf(stderr, "getaddrinfo: %s\n", evutil_gai_strerror(err));
+	} else {
+		if (create_plexer(addr->ai_family, addr->ai_socktype, addr->ai_protocol, addr->ai_addr, addr->ai_addrlen, ptr) != 0)
+			exit(EX_TEMPFAIL);
+		evutil_freeaddrinfo(addr);
+		addr = NULL;
+	}
+}
+
+static int parse_listener(char *arg, struct evdns_base *dns, evutil_socket_t *serv)
+{
+	if (*arg == '[') {
+		struct sockaddr_in6 sa;
+		char *end, *c = strchr(arg, ']');
+		unsigned long int i = strtoul(c + 2, &end, 10);
+		ptrdiff_t len;
+		char *name;
+
+		if (c == NULL) {
+			fputs("Host must be in form <host>:<port>\n", stderr);
+			return EX_USAGE;
+		}
+
+		len = c - arg - 1;
+		name = malloc(len + 1);
+		if (name == NULL) {
+			return EX_OSERR;
+		} else if (*end != '\0') {
+			fprintf(stderr, "Cannot parse %s as port.\n", c);
+			return EX_USAGE;
+		} else if (i <= 0 || i > 65535) {
+			fprintf(stderr, "Port must be between 0 and 65535, not %lu\n", i);
+			return EX_USAGE;
+		}
+
+		memset(&sa, 0, sizeof(sa));
+		sa.sin6_family = AF_INET6;
+		sa.sin6_port = htons(i);
+
+		strncpy(name, arg + 1, len);
+		name[len] = '\0';
+		if (inet_pton(AF_INET6, name, &(sa.sin6_addr)) != 1) {
+			fprintf(stderr, "Not a valid IPv6 address: %s\n", name);
+		}
+		free(name);
+		create_plexer(PF_INET6, SOCK_STREAM, IPPROTO_TCP, (struct sockaddr*)&sa, sizeof(sa), serv);
+	} else {
+		struct evutil_addrinfo hints;
+		char *c = strchr(arg, ':');
+		ptrdiff_t len;
+		char *name;
+
+		if (c == NULL) {
+			fputs("Host must be in form <host>:<port>\n", stderr);
+			return EX_USAGE;
+		}
+
+		len = c - arg;
+		name = malloc(len + 1);
+		if (name == NULL) {
+			return EX_OSERR;
+		}
+
+
+		memset(&hints, 0, sizeof(hints));
+		hints.ai_family = AF_UNSPEC;
+		hints.ai_socktype = SOCK_STREAM;
+		hints.ai_protocol = IPPROTO_TCP;
+
+		strncpy(name, arg, len);
+		name[len] = '\0';
+		evdns_getaddrinfo(dns, name, c + 1, &hints, create_plexer_cb, serv);
+		free(name);
+	}
+
 	return 0;
 }
 
@@ -354,9 +420,16 @@ static int parse_host(char *arg, struct tplexee *plex)
 		struct sockaddr_in6 sa;
 		char *end, *c = strchr(arg, ']');
 		unsigned long int i = strtoul(c + 2, &end, 10);
-		ptrdiff_t len = c - arg - 1;
-		char *name = malloc(len + 1);
+		ptrdiff_t len;
+		char *name;
 
+		if (c == NULL) {
+			fputs("Host must be in form <host>:<port>\n", stderr);
+			return EX_USAGE;
+		}
+
+		len = c - arg - 1;
+		name = malloc(len + 1);
 		if (name == NULL) {
 			return EX_OSERR;
 		} else if (*end != '\0') {
@@ -381,8 +454,16 @@ static int parse_host(char *arg, struct tplexee *plex)
 	} else {
 		struct evutil_addrinfo hints;
 		char *c = strchr(arg, ':');
-		ptrdiff_t len = c - arg;
-		char *name = malloc(len + 1);
+		ptrdiff_t len;
+		char *name;
+
+		if (c == NULL) {
+			fputs("Host must be in form <host>:<port>\n", stderr);
+			return EX_USAGE;
+		}
+
+		len = c - arg;
+		name = malloc(len + 1);
 		if (name == NULL) {
 			return EX_OSERR;
 		}
@@ -481,6 +562,7 @@ int main(int argc, char *argv[])
 	struct event_base *base;
 	struct event *int_event = NULL, *term_event = NULL, *serv_event = NULL;
 	struct plex_data data;
+	char *listener = "localhost:7463";
 	int i;
 
 	if (argc == 1) {
@@ -499,10 +581,10 @@ int main(int argc, char *argv[])
 			usage(false);
 			return EX_OK;
 		} else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-			puts("tcplex version 0.1b");
+			puts("tcplex version 0.1");
 			return EX_OK;
 		} else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--listen") == 0) {
-			return EX_UNAVAILABLE;
+			listener = argv[++i];
 		} else if (i + 1 >= argc) {
 			usage(true);
 			fputs("\tAt least two hosts required\n", stderr);
@@ -536,7 +618,7 @@ int main(int argc, char *argv[])
 		return EX_SOFTWARE;
 	}
 
-	if (create_plexer(&data.serv) == -1 ||
+	if (parse_listener(listener, data.dns, &data.serv) != 0 ||
 			(serv_event = event_new(base, data.serv, EV_READ|EV_PERSIST, do_accept, &data)) == NULL ||
 						event_add(serv_event, NULL) == -1) {
 		cleanup(&data);
