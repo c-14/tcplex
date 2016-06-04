@@ -16,20 +16,18 @@
 #include <event2/event.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
+#include <event2/dns.h>
 #include <event2/util.h>
 
 #ifndef evbuffer_add_buffer_reference
 #define evbuffer_add_buffer_reference(x, y) evbuffer_add_buffer(x, y)
 #endif
 
-struct hostlist {
-	struct addrinfo *host;
-	struct hostlist *next;
-};
-
 struct tplexee {
 	struct bufferevent *client;
 	struct bufferevent *server;
+	struct event_base *base;
+	struct evdns_base *dns;
 	struct tplexee *next;
 	struct tplexee *head;
 	struct plexes *br;
@@ -44,11 +42,13 @@ struct plexes {
 
 struct plex_data {
 	struct event_base *base;
+	struct evdns_base *dns;
 	struct event **int_ev;
 	struct event **term_ev;
 	struct event **serv_ev;
 	evutil_socket_t serv;
-	struct hostlist *hosts;
+	int numhosts;
+	char **hosts;
 	struct plexes *connections; 
 };
 
@@ -111,24 +111,10 @@ void free_tplexee(struct tplexee *plex)
 	}
 }
 
-static void free_hostlist(struct hostlist *hosts)
-{
-	struct hostlist *next, *h = hosts;
-
-	while (h != NULL) {
-		next = h->next;
-		if (h->host)
-			freeaddrinfo(h->host);
-		free(h);
-		h = next;
-	}
-}
-
 void cleanup(struct plex_data *data)
 {
 	struct plexes *next, *conn = data->connections;
 
-	free_hostlist(data->hosts);
 	while (conn != NULL) {
 		next = conn->next;
 		free_tplexee(conn->plex);
@@ -142,6 +128,7 @@ void cleanup(struct plex_data *data)
 	safe_event_free(*(data->int_ev));
 	safe_event_free(*(data->term_ev));
 	safe_event_free(*(data->serv_ev));
+	evdns_base_free(data->dns, 0);
 	event_base_free(data->base);
 }
 
@@ -320,27 +307,96 @@ int create_plexer(evutil_socket_t *serv)
 	return 0;
 }
 
-int create_plexee(struct plex_data *data, struct tplexee *plex, struct addrinfo *host)
+static int create_plexee(struct tplexee *plex, int family, int socktype, int protocol, struct sockaddr *addr, socklen_t addrlen)
 {
-	struct bufferevent *bev;
 	evutil_socket_t sock;
+	struct bufferevent *bev;
 
-	sock = socket(host->ai_family, host->ai_socktype, host->ai_protocol);
+	sock = socket(family, socktype, protocol);
 	if (evutil_make_socket_nonblocking(sock) == -1 ||
-			(bev = bufferevent_socket_new(data->base, sock, BEV_OPT_CLOSE_ON_FREE)) == NULL) {
+			(bev = bufferevent_socket_new(plex->base, sock, BEV_OPT_CLOSE_ON_FREE)) == NULL) {
 		if (evutil_closesocket(sock) == -1)
 			perror("close");
 		perror("socket_new");
 		return -1;
 	}
 
-	if (bufferevent_socket_connect(bev, host->ai_addr, host->ai_addrlen) == -1) {
+	if (bufferevent_socket_connect(bev, addr, addrlen) == -1) {
 		perror("connect");
 		bufferevent_free(bev);
 		return -1;
 	}
 
 	bufferevent_setcb(bev, NULL, NULL, connectcb, plex);
+	return 0;
+}
+
+void create_plexees(int err, struct evutil_addrinfo *addr, void *ptr)
+{
+	struct tplexee *plex = ptr;
+
+	if (err != 0) {
+		fprintf(stderr, "getaddrinfo: %s\n", evutil_gai_strerror(err));
+	} else {
+		struct evutil_addrinfo *ai;
+
+		for (ai = addr; ai != NULL; ai = ai->ai_next) {
+			create_plexee(plex, ai->ai_family, ai->ai_socktype, ai->ai_protocol, ai->ai_addr, ai->ai_addrlen);
+		}
+		evutil_freeaddrinfo(addr);
+		addr = NULL;
+	}
+}
+
+static int parse_host(char *arg, struct tplexee *plex)
+{
+	if (*arg == '[') {
+		struct sockaddr_in6 sa;
+		char *end, *c = strchr(arg, ']');
+		unsigned long int i = strtoul(c + 2, &end, 10);
+		ptrdiff_t len = c - arg - 1;
+		char *name = malloc(len + 1);
+
+		if (name == NULL) {
+			return EX_OSERR;
+		} else if (*end != '\0') {
+			fprintf(stderr, "Cannot parse %s as port.\n", c);
+			return EX_USAGE;
+		} else if (i <= 0 || i > 65535) {
+			fprintf(stderr, "Port must be between 0 and 65535, not %lu\n", i);
+			return EX_USAGE;
+		}
+
+		memset(&sa, 0, sizeof(sa));
+		sa.sin6_family = AF_INET6;
+		sa.sin6_port = htons(i);
+
+		strncpy(name, arg + 1, len);
+		name[len] = '\0';
+		if (inet_pton(AF_INET6, name, &(sa.sin6_addr)) != 1) {
+			fprintf(stderr, "Not a valid IPv6 address: %s\n", name);
+		}
+		free(name);
+		create_plexee(plex, PF_INET6, SOCK_STREAM, IPPROTO_TCP, (struct sockaddr*)&sa, sizeof(sa));
+	} else {
+		struct evutil_addrinfo hints;
+		char *c = strchr(arg, ':');
+		ptrdiff_t len = c - arg;
+		char *name = malloc(len + 1);
+		if (name == NULL) {
+			return EX_OSERR;
+		}
+
+		memset(&hints, 0, sizeof(hints));
+		hints.ai_family = AF_UNSPEC;
+		hints.ai_socktype = SOCK_STREAM;
+		hints.ai_protocol = IPPROTO_TCP;
+
+		strncpy(name, arg, len);
+		name[len] = '\0';
+		evdns_getaddrinfo(plex->dns, name, c + 1, &hints, create_plexees, plex);
+		free(name);
+	}
 
 	return 0;
 }
@@ -355,6 +411,8 @@ void setup_plexees(struct bufferevent *bev, struct plex_data *data)
 		perror("malloc");
 		exit(EX_SOFTWARE);
 	}
+	plex->base = data->base;
+	plex->dns = data->dns;
 	plex->client = bev;
 	plex->server = NULL;
 	plex->next = NULL;
@@ -368,12 +426,10 @@ void setup_plexees(struct bufferevent *bev, struct plex_data *data)
 	conn->br = data;
 	data->connections = conn;
 
-	for (struct hostlist *h = data->hosts; h != NULL; h = h->next) {
-		for (struct addrinfo *p = h->host; p != NULL; p = p->ai_next) {
-			if (create_plexee(data, plex, p) != 0) {
-				free(plex);
-				exit(EX_SOFTWARE);
-			}
+	for (int i = 0; i < data->numhosts; i++) {
+		if (parse_host(data->hosts[i], plex) != 0) {
+			free(plex);
+			exit(EX_SOFTWARE);
 		}
 	}
 }
@@ -415,20 +471,53 @@ void do_accept(evutil_socket_t serv, short event, void *arg)
 	}
 }
 
-static int setup(struct hostlist *hosts, bool daemonize)
+static void usage(bool err)
+{
+	fputs("usage: tcplex [-d] [-h] [-v] [-l <host:port> ] <host:port ...>\n", err ? stderr : stdout);
+}
+
+int main(int argc, char *argv[])
 {
 	struct event_base *base;
 	struct event *int_event = NULL, *term_event = NULL, *serv_event = NULL;
 	struct plex_data data;
+	int i;
 
-	if (daemonize && daemon(1, 0) != 0) {
-		perror("daemon");
-		free_hostlist(hosts);
-		return EX_OSERR;
+	if (argc == 1) {
+		usage(true);
+		fputs("\tAt least two hosts required\n", stderr);
+		return EX_USAGE;
+	}
+
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--daemon") == 0) {
+			if (daemon(1, 0) != 0) {
+				perror("daemon");
+				return EX_OSERR;
+			}
+		} else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+			usage(false);
+			return EX_OK;
+		} else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+			puts("tcplex version 0.1b");
+			return EX_OK;
+		} else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--listen") == 0) {
+			return EX_UNAVAILABLE;
+		} else if (i + 1 >= argc) {
+			usage(true);
+			fputs("\tAt least two hosts required\n", stderr);
+			return EX_USAGE;
+		} else {
+			break;
+		}
 	}
 
 	if ((base = event_base_new()) == NULL) {
-		free_hostlist(hosts);
+		return EX_SOFTWARE;
+	}
+
+	if ((data.dns = evdns_base_new(base, 1)) == NULL) {
+		event_base_free(base);
 		return EX_SOFTWARE;
 	}
 
@@ -437,7 +526,8 @@ static int setup(struct hostlist *hosts, bool daemonize)
 	data.term_ev = &term_event;
 	data.serv_ev = &serv_event;
 	data.serv = 0;
-	data.hosts = hosts;
+	data.hosts = argv + i;
+	data.numhosts = argc - i;
 	data.connections = NULL;
 
 	if ((int_event = sigregister(base, SIGINT, exit_cb, &data)) == NULL ||
@@ -457,141 +547,4 @@ static int setup(struct hostlist *hosts, bool daemonize)
 
 	cleanup(&data);
 	return EX_OK;
-}
-
-/* static int parse_ipv6(struct hostlist *h, char *arg) */
-/* { */
-/* 	char *end, *c = strchr(arg, ']'); */
-/* 	unsigned long int i = strtoul(c + 2, &end, 10); */
-
-/* 	if (*end != '\0') { */
-/* 		fprintf(stderr, "Cannot parse %s as port.\n", c); */
-/* 		return EX_USAGE; */
-/* 	} else if (i <= 0 || i > 65535) { */
-/* 		fprintf(stderr, "Port must be between 0 and 65535, not %lu\n", i); */
-/* 		return EX_USAGE; */
-/* 	} */
-
-/* 	h->addr = IN6ADDR_LOOPBACK_INIT; */
-/* 	h->port = htons(i); */
-/* 	h->family = AF_INET6; */
-/* 	return 0; */
-/* } */
-
-/* static int parse_ipv4(struct hostlist *h, char *arg) */
-/* { */
-/* 	struct sockaddr_in sin; */
-/* 	char *end, *c = strchr(arg, ':'); */
-/* 	unsigned long int i = strtoul(++c, &end, 10); */
-
-/* 	if (*end != '\0') { */
-/* 		fprintf(stderr, "Cannot parse %s as port.\n", c); */
-/* 		return EX_USAGE; */
-/* 	} else if (i <= 0 || i > 65535) { */
-/* 		fprintf(stderr, "Port must be between 0 and 65535, not %lu\n", i); */
-/* 		return EX_USAGE; */
-/* 	} */
-
-/* 	h->addr = htonl(INADDR_LOOPBACK); */
-/* 	h->port = htons(i); */
-/* 	h->family = AF_INET; */
-/* 	return 0; */
-/* } */
-
-static int parse_hosts(int argc, char *argv[], struct hostlist **hosts)
-{
-	*hosts = NULL;
-	for (int i = 0; i < argc; i++) {
-		struct addrinfo *servinfo, hints;
-		struct hostlist *h = malloc(sizeof(struct hostlist));
-		int ret = 0;
-		if (h == NULL)
-			return EX_OSERR;
-		h->host = NULL;
-		h->next = NULL;
-
-		memset(&hints, 0, sizeof(hints));
-		hints.ai_family = AF_UNSPEC;
-		hints.ai_socktype = SOCK_STREAM;
-
-		if (*argv[i] == '[') {
-			char *c = strchr(argv[i], ']');
-			ptrdiff_t len = c - argv[i] + 1;
-			char *name = malloc(len + 1);
-			if (name == NULL) {
-				free_hostlist(h);
-				return EX_OSERR;
-			}
-			strncpy(name, argv[i] + 1, len);
-			name[len] = '\0';
-			hints.ai_family = AF_INET6;
-			ret = getaddrinfo(name, c + 2, &hints, &servinfo);
-			free(name);
-		} else {
-			char *c = strchr(argv[i], ':');
-			ptrdiff_t len = c - argv[i];
-			char *name = malloc(len + 1);
-			if (name == NULL) {
-				free_hostlist(h);
-				return EX_OSERR;
-			}
-			strncpy(name, argv[i], len);
-			name[len] = '\0';
-			ret = getaddrinfo(name, c + 1, &hints, &servinfo);
-			free(name);
-		}
-		if (ret != 0) {
-			fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(ret));
-			return EX_OSERR;
-		}
-		h->host = servinfo;
-		h->next = *hosts;
-		*hosts = h;
-	}
-
-	return 0;
-}
-
-static void usage(bool err)
-{
-	fputs("usage: tcplex [-d] [-h] [-v] [-l <host:port> ] <host:port ...>\n", err ? stderr : stdout);
-}
-
-int main(int argc, char *argv[])
-{
-	struct hostlist *hosts = NULL;
-	bool daemon = false;
-	int i, ret = 0;
-
-	if (argc == 1) {
-		usage(true);
-		fputs("\tAt least two hosts required\n", stderr);
-		return EX_USAGE;
-	}
-
-	for (i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--daemon") == 0) {
-			daemon = true;
-		} else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-			usage(false);
-			return EX_OK;
-		} else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-			puts("tcplex version 0.1b");
-			return EX_OK;
-		} else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--listen") == 0) {
-			return EX_UNAVAILABLE;
-		} else if (i + 1 >= argc) {
-			usage(true);
-			fputs("\tAt least two hosts required\n", stderr);
-			return EX_USAGE;
-		} else {
-			break;
-		}
-	}
-
-	if ((ret = parse_hosts(argc - i, argv + i, &hosts)) != 0) {
-		return ret;
-	}
-
-	return setup(hosts, daemon);
 }
