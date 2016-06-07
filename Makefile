@@ -6,7 +6,7 @@ BDIR=$(DESTDIR)/$(PREFIX)
 
 all: src/tcplex
 
-src/tcplex: $(OBJS)
+src/tcplex: src/tcplex.c
 	$(MAKE) -C src tcplex
 
 install: src/tcplex

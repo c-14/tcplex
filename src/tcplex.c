@@ -324,9 +324,11 @@ static int parse_listener(char *arg, struct evdns_base *dns, evutil_socket_t *se
 			return EX_OSERR;
 		} else if (*end != '\0') {
 			fprintf(stderr, "Cannot parse %s as port.\n", c);
+			free(name);
 			return EX_USAGE;
 		} else if (i <= 0 || i > 65535) {
 			fprintf(stderr, "Port must be between 0 and 65535, not %lu\n", i);
+			free(name);
 			return EX_USAGE;
 		}
 
