@@ -450,6 +450,8 @@ static int parse_host(char *arg, struct tplexee *plex)
 		name[len] = '\0';
 		if (inet_pton(AF_INET6, name, &(sa.sin6_addr)) != 1) {
 			fprintf(stderr, "Not a valid IPv6 address: %s\n", name);
+			free(name);
+			return EX_USAGE;
 		}
 		free(name);
 		create_plexee(plex, PF_INET6, SOCK_STREAM, IPPROTO_TCP, (struct sockaddr*)&sa, sizeof(sa));
