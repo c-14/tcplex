@@ -1,6 +1,6 @@
 CC               = c99
-LIBEVENT_CFLAGS  = `pkg-config --cflags libevent libevent_openssl`
-LIBEVENT_LDFLAGS = `pkg-config --libs libevent libevent_openssl`
+LIBEVENT_CFLAGS  = `pkg-config --cflags libevent`
+LIBEVENT_LDFLAGS = `pkg-config --libs libevent`
 
 WFLAGS  = -Wall -Wextra -Wpedantic -Werror -Wdeclaration-after-statement #-Wwrite-strings
 CFLAGS  = $(WFLAGS) $(LIBEVENT_CFLAGS) -pipe -fstack-protector -g -ggdb $(EXTRA_CFLAGS)
