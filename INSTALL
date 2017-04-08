@@ -12,8 +12,9 @@ pkg-config
 
 tcplex uses pkg-config to locate libevent. If you do not have pkg-config, or if
 your version of the library does not ship the ".pc" file, you have to provide
-the library's build options as arguments to make.  Example: 
-	
+the library's build options as arguments to make.
+Example:
+
 	make LIBEVENT_CFLAGS="-I/usr/local/include" LIBEVENT_LDFLAGS="-L/usr/local/lib -levent"
 
 Compilers and Options
